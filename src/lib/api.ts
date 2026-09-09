@@ -1,10 +1,10 @@
 // ===== Cliente HTTP — Best Medical Financeiro =====
 // Fala com o MESMO backend do app principal (app.bestmedical.com.br), só
-// que a partir de outro domínio (financeiro.bestmedical.com.br). Dois
-// sistemas de autenticação, independentes e sem relação entre si:
-// - "staff": o login de usuário da Best (JWT), usado por Best e Padu Studios.
-// - "pessoal": a senha própria da área Pessoal (ver financeiro-pessoal-auth
-//   no backend), usada por Pessoal e pela área reservada.
+// que a partir de outro domínio (financeiro.bestmedical.com.br). Login
+// próprio, em cascata de 3 níveis (entrada -> pessoal -> secreto) — nada a
+// ver com o login de usuário da Best, embora por baixo dos panos gere o
+// mesmo tipo de token (por isso um único token/sessão cobre tanto o
+// Financeiro Best (espelhado) quanto Pessoal/Secreto).
 const API_PADRAO_PROD = "https://bestmedical-api.onrender.com/api/v1";
 
 const urlConfigurada = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
@@ -34,34 +34,37 @@ function safeSet(key: string, v: string | null) {
   }
 }
 
-// ===== Token do staff (login de usuário da Best) — Best + Padu Studios =====
-const STAFF_TOKEN_KEY = "bmf_staff_token";
-let staffToken: string | null = safeGet(STAFF_TOKEN_KEY);
-export const setStaffToken = (t: string | null) => {
-  staffToken = t;
-  safeSet(STAFF_TOKEN_KEY, t);
-};
-export const getStaffToken = () => staffToken;
+// ===== Sessão única (token + nível) =====
+export type NivelFinanceiro = "nenhum" | "entrada" | "pessoal" | "secreto";
 
-// ===== Token da área Pessoal (senha própria) — Pessoal + área reservada ====
-const PESSOAL_TOKEN_KEY = "bmf_pessoal_token";
-let pessoalToken: string | null = safeGet(PESSOAL_TOKEN_KEY);
-export const setPessoalToken = (t: string | null) => {
-  pessoalToken = t;
-  safeSet(PESSOAL_TOKEN_KEY, t);
+const TOKEN_KEY = "bmf_token";
+let token: string | null = safeGet(TOKEN_KEY);
+export const setToken = (t: string | null) => {
+  token = t;
+  safeSet(TOKEN_KEY, t);
 };
-export const getPessoalToken = () => pessoalToken;
+export const getToken = () => token;
+
+const NIVEL_KEY = "bmf_nivel";
+export function lerNivelSalvo(): NivelFinanceiro {
+  const v = safeGet(NIVEL_KEY);
+  return v === "entrada" || v === "pessoal" || v === "secreto" ? v : "nenhum";
+}
+export function salvarNivel(n: NivelFinanceiro) {
+  if (n === "nenhum") safeSet(NIVEL_KEY, null);
+  else safeSet(NIVEL_KEY, n);
+}
 
 async function req<T>(
   path: string,
-  token: string | null,
+  usarToken: boolean,
   options: RequestInit = {},
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(usarToken && token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });
@@ -79,70 +82,59 @@ async function req<T>(
   return res.json();
 }
 
-// ===================== Auth — staff (Best Medical) =====================
+// ===================== Auth — cascata de 3 níveis =====================
 
-export interface StaffUser {
-  id: string;
-  nome: string;
-  usuario: string;
-  email: string;
-  perfil: string;
-}
+export const authFinanceiro = {
+  status: () => req<{ entradaConfigurada: boolean }>("/financeiro/status", false),
 
-export const authStaff = {
-  login: (usuario: string, senha: string) =>
-    req<{ accessToken: string; user: StaffUser }>("/auth/login", null, {
+  cadastrarEntrada: (usuario: string, senha: string, pin: string) =>
+    req<{ accessToken: string }>("/financeiro/cadastrar-entrada", false, {
+      method: "POST",
+      body: JSON.stringify({ usuario, senha, pin }),
+    }),
+
+  entrar: (usuario: string, senha: string) =>
+    req<{ accessToken: string; pessoalConfigurada: boolean }>("/financeiro/entrar", false, {
       method: "POST",
       body: JSON.stringify({ usuario, senha }),
     }),
-  me: () => req<StaffUser>("/auth/me", getStaffToken()),
-};
 
-// ===================== Auth — área Pessoal (senha própria) ===============
-
-export const authPessoal = {
-  status: () => req<{ configurado: boolean }>("/financeiro/pessoal/status", null),
-
-  cadastrar: (senha: string) =>
-    req<{ accessToken: string }>("/financeiro/pessoal/cadastrar", null, {
+  cadastrarPessoal: (senha: string) =>
+    req<{ accessToken: string }>("/financeiro/pessoal/cadastrar", true, {
       method: "POST",
       body: JSON.stringify({ senha }),
     }),
 
-  entrar: (senha: string) =>
-    req<{ accessToken: string; precisaConfigurarSecreta: boolean }>(
+  entrarPessoal: (senha: string) =>
+    req<{ accessToken: string; secretaConfigurada: boolean }>(
       "/financeiro/pessoal/entrar",
-      null,
+      true,
       { method: "POST", body: JSON.stringify({ senha }) },
     ),
 
-  cadastrarSecreta: (senha: string) =>
-    req<{ accessToken: string }>(
-      "/financeiro/pessoal/cadastrar-secreta",
-      getPessoalToken(),
-      { method: "POST", body: JSON.stringify({ senha }) },
-    ),
+  cadastrarSecreto: (senha: string) =>
+    req<{ accessToken: string }>("/financeiro/pessoal/reservado/cadastrar", true, {
+      method: "POST",
+      body: JSON.stringify({ senha }),
+    }),
 
   // O gatilho "disfarçado de bug". Lança se a senha não bater — quem chama
   // deve tratar o erro engolindo-o silenciosamente (ver componente Cadeado).
-  entrarSecreta: (senha: string) =>
-    req<{ accessToken: string }>(
-      "/financeiro/pessoal/entrar-secreta",
-      getPessoalToken(),
-      { method: "POST", body: JSON.stringify({ senha }) },
-    ),
-
-  esqueciSenha: () =>
-    req<{ ok: true }>("/financeiro/pessoal/esqueci-senha", null, { method: "POST" }),
-
-  redefinirSenha: (token: string, novaSenha: string) =>
-    req<{ ok: true }>("/financeiro/pessoal/redefinir-senha", null, {
+  entrarSecreto: (senha: string) =>
+    req<{ accessToken: string }>("/financeiro/pessoal/reservado/entrar", true, {
       method: "POST",
-      body: JSON.stringify({ token, novaSenha }),
+      body: JSON.stringify({ senha }),
+    }),
+
+  // PIN único de 6 dígitos — reseta os 3 níveis de senha (não os dados).
+  recuperar: (pin: string) =>
+    req<{ ok: true }>("/financeiro/recuperar", false, {
+      method: "POST",
+      body: JSON.stringify({ pin }),
     }),
 };
 
-// ===================== Tipos genéricos (mesma forma nos 4 contextos) =====
+// ===================== Tipos genéricos (mesma forma em cada contexto) ====
 
 export const FORMAS_PAGAMENTO = [
   "Pix",
@@ -185,8 +177,8 @@ export interface Despesa {
   prioridade: string | null;
 }
 
-// Recebível: o campo "quem paga" chama-se "empresa" no backend da Best/Padu
-// e "origem" no da Pessoal/Reservado — aqui, sempre "contraparte".
+// Recebível: o campo "quem paga" chama-se "empresa" no backend da Best e
+// "origem" no da Pessoal/Reservado — aqui, sempre "contraparte".
 export interface Recebivel {
   id: string;
   data: string;
@@ -272,10 +264,9 @@ function normalizarRecebivel(r: RecebivelBruto): Recebivel {
 }
 
 // ===================== Fábrica de cliente por contexto ===================
-// Cada um dos 4 contextos financeiros (Best, Padu Studios, Pessoal, área
-// reservada) expõe o MESMO conjunto de rotas no backend, só que sob
-// prefixos e mecanismos de autenticação diferentes — esta fábrica gera o
-// mesmo conjunto de funções para qualquer um deles.
+// Best (espelhado), Pessoal e Secreto expõem o MESMO conjunto de rotas no
+// backend, sob prefixos diferentes — esta fábrica gera o mesmo conjunto de
+// funções pra qualquer um dos três. Todos usam a MESMA sessão (token único).
 
 interface ListaParams {
   busca?: string;
@@ -293,78 +284,74 @@ function query(params?: ListaParams): string {
   return s ? `?${s}` : "";
 }
 
-export function criarClienteFinanceiro(basePath: string, token: () => string | null) {
+export function criarClienteFinanceiro(basePath: string) {
   return {
     // ----- Despesas -----
     listarDespesas: (params?: ListaParams) =>
-      req<Paginated<Despesa>>(`${basePath}/despesas${query(params)}`, token()),
+      req<Paginated<Despesa>>(`${basePath}/despesas${query(params)}`, true),
     criarDespesa: (dto: Record<string, unknown>) =>
-      req<Despesa>(`${basePath}/despesas`, token(), {
+      req<Despesa>(`${basePath}/despesas`, true, {
         method: "POST",
         body: JSON.stringify(dto),
       }),
     atualizarDespesa: (id: string, dto: Record<string, unknown>) =>
-      req<Despesa>(`${basePath}/despesas/${id}`, token(), {
+      req<Despesa>(`${basePath}/despesas/${id}`, true, {
         method: "PUT",
         body: JSON.stringify(dto),
       }),
     removerDespesa: (id: string) =>
-      req<{ ok: boolean }>(`${basePath}/despesas/${id}`, token(), { method: "DELETE" }),
+      req<{ ok: boolean }>(`${basePath}/despesas/${id}`, true, { method: "DELETE" }),
     listarBaixasDespesa: (id: string) =>
-      req<Baixa[]>(`${basePath}/despesas/${id}/baixas`, token()),
+      req<Baixa[]>(`${basePath}/despesas/${id}/baixas`, true),
     registrarBaixaDespesa: (id: string, dto: NovaBaixa) =>
-      req<Despesa>(`${basePath}/despesas/${id}/baixas`, token(), {
+      req<Despesa>(`${basePath}/despesas/${id}/baixas`, true, {
         method: "POST",
         body: JSON.stringify(dto),
       }),
     removerBaixaDespesa: (id: string, baixaId: string) =>
-      req<Despesa>(`${basePath}/despesas/${id}/baixas/${baixaId}`, token(), {
+      req<Despesa>(`${basePath}/despesas/${id}/baixas/${baixaId}`, true, {
         method: "DELETE",
       }),
 
     // ----- Recebíveis -----
     listarRecebiveis: (params?: ListaParams) =>
-      req<Paginated<RecebivelBruto>>(`${basePath}/recebiveis${query(params)}`, token()).then(
+      req<Paginated<RecebivelBruto>>(`${basePath}/recebiveis${query(params)}`, true).then(
         (r) => ({ ...r, data: r.data.map(normalizarRecebivel) }),
       ),
     criarRecebivel: (dto: Record<string, unknown>) =>
-      req<RecebivelBruto>(`${basePath}/recebiveis`, token(), {
+      req<RecebivelBruto>(`${basePath}/recebiveis`, true, {
         method: "POST",
         body: JSON.stringify(dto),
       }).then(normalizarRecebivel),
     atualizarRecebivel: (id: string, dto: Record<string, unknown>) =>
-      req<RecebivelBruto>(`${basePath}/recebiveis/${id}`, token(), {
+      req<RecebivelBruto>(`${basePath}/recebiveis/${id}`, true, {
         method: "PUT",
         body: JSON.stringify(dto),
       }).then(normalizarRecebivel),
     removerRecebivel: (id: string) =>
-      req<{ ok: boolean }>(`${basePath}/recebiveis/${id}`, token(), { method: "DELETE" }),
+      req<{ ok: boolean }>(`${basePath}/recebiveis/${id}`, true, { method: "DELETE" }),
     listarBaixasRecebivel: (id: string) =>
-      req<Baixa[]>(`${basePath}/recebiveis/${id}/baixas`, token()),
+      req<Baixa[]>(`${basePath}/recebiveis/${id}/baixas`, true),
     registrarBaixaRecebivel: (id: string, dto: NovaBaixa) =>
-      req<RecebivelBruto>(`${basePath}/recebiveis/${id}/baixas`, token(), {
+      req<RecebivelBruto>(`${basePath}/recebiveis/${id}/baixas`, true, {
         method: "POST",
         body: JSON.stringify(dto),
       }).then(normalizarRecebivel),
     removerBaixaRecebivel: (id: string, baixaId: string) =>
-      req<RecebivelBruto>(`${basePath}/recebiveis/${id}/baixas/${baixaId}`, token(), {
+      req<RecebivelBruto>(`${basePath}/recebiveis/${id}/baixas/${baixaId}`, true, {
         method: "DELETE",
       }).then(normalizarRecebivel),
 
     // ----- Fluxo de Caixa + Dashboard -----
-    fluxoCaixa: () => req<FluxoCaixaLancamento[]>(`${basePath}/fluxo-caixa`, token()),
-    resumo: () => req<ResumoFinanceiro>(`${basePath}/resumo`, token()),
+    fluxoCaixa: () => req<FluxoCaixaLancamento[]>(`${basePath}/fluxo-caixa`, true),
+    resumo: () => req<ResumoFinanceiro>(`${basePath}/resumo`, true),
   };
 }
 
 export type ClienteFinanceiro = ReturnType<typeof criarClienteFinanceiro>;
 
-// ===================== Os 4 clientes =====================
+// ===================== Os 3 clientes =====================
 
-export const apiBest = criarClienteFinanceiro("/financeiro", getStaffToken);
-export const apiPadu = criarClienteFinanceiro("/financeiro/padu", getStaffToken);
-export const apiPessoal = criarClienteFinanceiro("/financeiro/pessoal", getPessoalToken);
-export const apiReservado = criarClienteFinanceiro(
-  "/financeiro/pessoal/reservado",
-  getPessoalToken,
-);
+export const apiBest = criarClienteFinanceiro("/financeiro");
+export const apiPessoal = criarClienteFinanceiro("/financeiro/pessoal");
+export const apiReservado = criarClienteFinanceiro("/financeiro/pessoal/reservado");

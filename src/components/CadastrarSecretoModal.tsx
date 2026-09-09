@@ -1,10 +1,16 @@
 import { useState, type FormEvent } from "react";
 import { X } from "lucide-react";
 import { Button, Input } from "./ui";
-import { usePessoalAuth } from "../pessoalAuth";
+import { useFinanceiroAuth } from "../financeiroAuth";
 
-export function CadastrarSecretaModal({ onFechar }: { onFechar: () => void }) {
-  const { cadastrarSecreta } = usePessoalAuth();
+export function CadastrarSecretoModal({
+  onFechar,
+  onSucesso,
+}: {
+  onFechar: () => void;
+  onSucesso: () => void;
+}) {
+  const { cadastrarSecreto } = useFinanceiroAuth();
   const [senha, setSenha] = useState("");
   const [confirmacao, setConfirmacao] = useState("");
   const [erro, setErro] = useState<string | null>(null);
@@ -23,8 +29,8 @@ export function CadastrarSecretaModal({ onFechar }: { onFechar: () => void }) {
     }
     setEnviando(true);
     try {
-      await cadastrarSecreta(senha);
-      onFechar();
+      await cadastrarSecreto(senha);
+      onSucesso();
     } catch (err) {
       setErro(err instanceof Error ? err.message : "Não foi possível cadastrar.");
     } finally {

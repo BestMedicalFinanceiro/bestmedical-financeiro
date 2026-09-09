@@ -1,29 +1,36 @@
 import { useRef, useState } from "react";
 import { Lock } from "lucide-react";
-import { usePessoalAuth } from "../pessoalAuth";
+import { useFinanceiroAuth } from "../financeiroAuth";
 
 const DURACAO_PRESSIONAR_MS = 1100;
 
-// O cadeado tem duas faces:
-// - Clique normal: sempre "sai" (comportamento chato e previsível, como
-//   qualquer botão de lock/logout — inclusive na primeiríssima vez que a
-//   senha secreta ainda não existe, quando abre o cadastro dela).
-// - Pressionar e segurar (só depois que a secreta já foi configurada e a
-//   sessão ainda está no escopo comum): dispara uma caixinha de texto solta,
-//   sem rótulo, mal posicionada — como um resíduo de renderização — que
-//   some sozinha se ninguém interagir. Digitar a senha secreta ali dentro
-//   tenta elevar a sessão; qualquer outra coisa (ou nada) e ela só some,
-//   sem nenhuma mensagem.
+// O cadeado guia toda a cascata de níveis, e tem duas faces:
+// - Clique normal: comportamento sempre visível e "chato" — abre o próximo
+//   cadastro pendente (pessoal ou secreto), ou pede a senha pessoal (se já
+//   cadastrada mas a sessão ainda está só em 'entrada'), ou simplesmente
+//   desloga (se não há mais nada pendente no nível atual).
+// - Pressionar e segurar (só ativo quando nível === 'pessoal' e a secreta
+//   já foi configurada): dispara uma caixinha de texto solta, sem rótulo,
+//   mal posicionada — como um resíduo de renderização — que some sozinha
+//   se ninguém interagir. Digitar a senha secreta ali dentro tenta elevar
+//   a sessão; qualquer outra coisa (ou nada) e ela só some, sem mensagem.
 export function Cadeado({
-  onAbrirCadastroSecreta,
+  onAbrirCadastroPessoal,
+  onAbrirEntrarPessoal,
+  onAbrirCadastroSecreto,
 }: {
-  onAbrirCadastroSecreta: () => void;
+  onAbrirCadastroPessoal: () => void;
+  onAbrirEntrarPessoal: () => void;
+  onAbrirCadastroSecreto: () => void;
 }) {
-  const { escopo, precisaConfigurarSecreta, logout, tentarSecreta } = usePessoalAuth();
+  const { nivel, pessoalConfigurada, secretaConfigurada, logout, tentarSecreto } =
+    useFinanceiroAuth();
   const [glitch, setGlitch] = useState(false);
   const [valor, setValor] = useState("");
   const timerRef = useRef<number | null>(null);
   const disparouRef = useRef(false);
+  const valorRef = useRef("");
+  valorRef.current = valor;
 
   const cancelarTimer = () => {
     if (timerRef.current) {
@@ -32,7 +39,7 @@ export function Cadeado({
     }
   };
 
-  const podeGlitch = escopo === "pessoal" && !precisaConfigurarSecreta;
+  const podeGlitch = nivel === "pessoal" && secretaConfigurada;
 
   const onPointerDown = () => {
     if (!podeGlitch) return;
@@ -41,23 +48,23 @@ export function Cadeado({
       disparouRef.current = true;
       setGlitch(true);
       setValor("");
-      window.setTimeout(() => setGlitch((g) => (valorAtualVazio() ? false : g)), 2200);
+      window.setTimeout(
+        () => setGlitch((g) => (valorRef.current.trim().length === 0 ? false : g)),
+        2200,
+      );
     }, DURACAO_PRESSIONAR_MS);
   };
-
-  // Evita capturar `valor` desatualizado no fechamento acima.
-  const valorRef = useRef("");
-  valorRef.current = valor;
-  function valorAtualVazio() {
-    return valorRef.current.trim().length === 0;
-  }
 
   const onPointerUp = () => {
     cancelarTimer();
     if (disparouRef.current) return; // já virou glitch, não trata como clique
-    if (escopo === "nenhum") return;
-    if (precisaConfigurarSecreta) {
-      onAbrirCadastroSecreta();
+    if (nivel === "nenhum") return;
+    if (nivel === "entrada" && !pessoalConfigurada) {
+      onAbrirCadastroPessoal();
+    } else if (nivel === "entrada" && pessoalConfigurada) {
+      onAbrirEntrarPessoal();
+    } else if (nivel === "pessoal" && !secretaConfigurada) {
+      onAbrirCadastroSecreto();
     } else {
       logout();
     }
@@ -72,7 +79,7 @@ export function Cadeado({
     setGlitch(false);
     setValor("");
     if (!senha) return;
-    await tentarSecreta(senha); // nunca lança; sucesso já atualiza o escopo
+    await tentarSecreto(senha); // nunca lança; sucesso já atualiza o nível
   };
 
   return (
