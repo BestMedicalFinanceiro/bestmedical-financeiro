@@ -38,12 +38,14 @@ type CampoExtra = {
   required?: boolean;
   icon?: ReactNode;
   rightIcon?: ReactNode;
+  hint?: string;
 };
 
-// Embrulha um controle com label (se houver) e ícones laterais.
+// Embrulha um controle com label (se houver), ícones laterais e uma dica
+// abaixo do campo (mesma aparência do componente Field).
 function comAdornos(
   controle: ReactNode,
-  { label, required, icon, rightIcon }: CampoExtra,
+  { label, required, icon, rightIcon, hint }: CampoExtra,
 ) {
   const corpo =
     icon || rightIcon ? (
@@ -64,11 +66,12 @@ function comAdornos(
       controle
     );
 
-  if (!label) return <>{corpo}</>;
+  if (!label && !hint) return <>{corpo}</>;
   return (
     <div>
-      <Label required={required}>{label}</Label>
+      {label && <Label required={required}>{label}</Label>}
       {corpo}
+      {hint && <p className="mt-1 text-[12px] text-text-faint">{hint}</p>}
     </div>
   );
 }
@@ -78,6 +81,7 @@ export function Input({
   required,
   icon,
   rightIcon,
+  hint,
   ...props
 }: InputHTMLAttributes<HTMLInputElement> & CampoExtra) {
   const controle = (
@@ -88,7 +92,7 @@ export function Input({
       } ${props.className ?? ""}`}
     />
   );
-  return comAdornos(controle, { label, required, icon, rightIcon });
+  return comAdornos(controle, { label, required, icon, rightIcon, hint });
 }
 
 export function Textarea({
